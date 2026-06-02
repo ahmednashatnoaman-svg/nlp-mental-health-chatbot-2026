@@ -66,7 +66,7 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .medium-banner{background:linear-gradient(135deg,#FFFBEB,#FEF3C7);border:2px solid #F59E0B;border-radius:12px;padding:.9rem 1.25rem;margin-bottom:1rem;color:#92400E;font-weight:500;}
 
 /* Status */
-.status-card{background:#F7FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:.6rem .8rem;margin:.3rem 0;display:flex;align-items:center;gap:.5rem;font-size:.82rem;}
+.status-card{background:#23304a;border:1px solid #3d4f6b;border-radius:10px;padding:.6rem .8rem;margin:.3rem 0;display:flex;align-items:center;gap:.5rem;font-size:.82rem;}
 .dot-green{width:10px;height:10px;border-radius:50%;background:#48BB78;flex-shrink:0;}
 .dot-red{width:10px;height:10px;border-radius:50%;background:#FC8181;flex-shrink:0;}
 
