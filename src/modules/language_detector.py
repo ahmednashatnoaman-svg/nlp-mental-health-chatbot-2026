@@ -82,13 +82,14 @@ def _has_accented_latin(text: str) -> bool:
 class LanguageDetector:
     def __init__(self, model_path: str | None = None):
         path = Path(model_path) if model_path else _DEFAULT_MODEL_PATH
-        if not path.exists():
-            raise FileNotFoundError(
-                f"Language model not found at {path}. "
-                "Run: python scripts/train_language_model.py"
-            )
-        self._pipeline = joblib.load(path)
-        self._classes  = list(self._pipeline.classes_)
+        if path.exists():
+            self._pipeline  = joblib.load(path)
+            self._classes   = list(self._pipeline.classes_)
+            self._has_model = True
+        else:
+            self._pipeline  = None
+            self._classes   = []
+            self._has_model = False
 
     def detect(self, text: str) -> dict:
         text = text.strip()
@@ -112,16 +113,25 @@ class LanguageDetector:
         if _is_ascii_text(text) and not _has_accented_latin(text) and word_count <= 4:
             return {"language": "en", "language_name": "English", "confidence": 0.85}
 
-        # ── Layer 3: Trained TF-IDF + LinearSVC model ─────────────────────────
-        proba   = self._pipeline.predict_proba([text])[0]
-        idx     = int(np.argmax(proba))
-        lang    = self._classes[idx]
-        conf    = float(proba[idx])
+        # ── Layer 3: Trained TF-IDF + LinearSVC model OR langdetect fallback ──
+        if self._has_model:
+            proba   = self._pipeline.predict_proba([text])[0]
+            idx     = int(np.argmax(proba))
+            lang    = self._classes[idx]
+            conf    = float(proba[idx])
 
-        # Extra guard: if model says non-English but text is mostly ASCII,
-        # only trust it when confidence is very high
-        if lang != "en" and _is_ascii_text(text) and conf < 0.92:
-            lang = "en"
+            # Extra guard: if model says non-English but text is mostly ASCII,
+            # only trust it when confidence is very high
+            if lang != "en" and _is_ascii_text(text) and conf < 0.92:
+                lang = "en"
+        else:
+            try:
+                from langdetect import detect as ld_detect
+                lang = ld_detect(text)
+                conf = 0.95
+            except Exception:
+                lang = "en"
+                conf = 0.85
 
         return {
             "language":      lang,

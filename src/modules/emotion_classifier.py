@@ -34,14 +34,15 @@ class EmotionClassifier:
         from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
 
         path = Path(model_path) if model_path else _DEFAULT_MODEL_PATH
-        if not path.exists():
-            raise FileNotFoundError(
-                f"Emotion model not found at {path}. "
-                "Run: python scripts/train_emotion_model.py"
-            )
-        self._device    = _best_device()
-        self._tokenizer = DistilBertTokenizerFast.from_pretrained(str(path))
-        self._model     = DistilBertForSequenceClassification.from_pretrained(str(path))
+        self._device = _best_device()
+        if path.exists():
+            model_source = str(path)
+        else:
+            # Fallback to pre-trained Hub model trained on the same dair-ai/emotion dataset
+            model_source = "bhadresh-savani/distilbert-base-uncased-emotion"
+
+        self._tokenizer = DistilBertTokenizerFast.from_pretrained(model_source)
+        self._model     = DistilBertForSequenceClassification.from_pretrained(model_source)
         self._model.to(self._device)
         self._model.eval()
 
