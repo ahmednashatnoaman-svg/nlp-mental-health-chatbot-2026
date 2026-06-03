@@ -118,8 +118,35 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .chat-container::-webkit-scrollbar-track{background:#F0F4F8;border-radius:3px;}
 .chat-container::-webkit-scrollbar-thumb{background:#CBD5E0;border-radius:3px;}
 
-/* Welcome chips */
-.chip{background:#EBF4FF;color:#2B5BA5;padding:.3rem .8rem;border-radius:20px;font-size:.82rem;display:inline-block;margin:.2rem;}
+/* Welcome chips — targets st.button() inside columns in main area only.
+   st.form_submit_button() uses data-testid="stFormSubmitButton" so it's unaffected.
+   Sidebar buttons are inside stSidebar so they're unaffected. */
+div[data-testid="stMain"] div[data-testid="stColumn"] div[data-testid="stButton"] button {
+    background: #EBF4FF !important;
+    color: #2B5BA5 !important;
+    border: 1.5px solid #BEE3F8 !important;
+    border-radius: 24px !important;
+    font-size: .84rem !important;
+    font-weight: 500 !important;
+    padding: .35rem .85rem !important;
+    box-shadow: none !important;
+    min-height: unset !important;
+    height: auto !important;
+    line-height: 1.45 !important;
+    transition: all .18s ease !important;
+    white-space: normal !important;
+    text-align: center !important;
+}
+div[data-testid="stMain"] div[data-testid="stColumn"] div[data-testid="stButton"] button:hover {
+    background: #BEE3F8 !important;
+    color: #1a4a8a !important;
+    border-color: #90CDF4 !important;
+    transform: translateY(-2px) scale(1.03) !important;
+    box-shadow: 0 4px 12px rgba(43,91,165,0.18) !important;
+}
+div[data-testid="stMain"] div[data-testid="stColumn"] div[data-testid="stButton"] button:active {
+    transform: scale(.97) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -147,6 +174,7 @@ def _init():
         "engine_loaded":      False,
         "engine":             None,
         "last_crisis_level":  "low",
+        "pending_input":      "",   # set by chip buttons; processed on next render
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -227,6 +255,15 @@ def render_sidebar(engine):
         if st.session_state.lang_history:
             unique_langs = list(dict.fromkeys(st.session_state.lang_history))
             st.caption(f"🌍 Languages: {', '.join(unique_langs)}")
+
+        # Memory indicator
+        mem_turns = min(st.session_state.turn_count * 2, 20)
+        st.markdown(
+            f'<div class="status-card"><div class="dot-green"></div>'
+            f'<span><b>💾 Memory</b><br>'
+            f'<small style="color:#94A3B8">{mem_turns} turns in context window</small></span></div>',
+            unsafe_allow_html=True,
+        )
 
         st.divider()
 
@@ -615,6 +652,72 @@ def render_analytics():
         st.plotly_chart(fig4, use_container_width=True)
 
 
+# ── Quick-start chips ─────────────────────────────────────────────────────────
+# (label shown on button, actual message sent to engine)
+QUICK_CHIPS = [
+    ("💭 I've been feeling anxious",   "I've been feeling anxious lately"),
+    ("😔 I can't sleep from stress",   "I can't sleep because of stress"),
+    ("🙋 How to manage depression?",   "How to manage depression?"),
+    ("😤 I feel angry all the time",   "I feel angry all the time"),
+    ("🌍 أشعر بالقلق",                 "أشعر بالقلق"),
+    ("🌍 Je me sens seul",             "Je me sens seul"),
+]
+
+
+# ── Message processing helper (shared by form + chip paths) ───────────────────
+def _send_message(msg: str, engine, settings: dict) -> None:
+    """Append user message, call engine, append assistant response, update state."""
+    st.session_state.messages.append(
+        {"role": "user", "content": msg, "meta": {}, "sources": []}
+    )
+    if engine and engine.status.intent:
+        with st.spinner("🧠 Processing…"):
+            result = engine.process(
+                msg,
+                session_id=st.session_state.session_id,
+                top_k=settings["top_k"],
+                strong_model=settings["strong_model"],
+            )
+        emotion_meta = result.get("emotion_meta", {})
+        meta = {
+            "language":      result.get("language"),
+            "language_name": result.get("language_name"),
+            "lang_conf":     result.get("lang_conf", 0),
+            "intent":        result.get("intent"),
+            "intent_emoji":  result.get("intent_meta", {}).get("emoji", ""),
+            "emotion":       result.get("emotion"),
+            "emo_emoji":     emotion_meta.get("emoji", ""),
+            "emo_conf":      emotion_meta.get("confidence", 0),
+            "elapsed_ms":    result.get("elapsed_ms"),
+            "crisis":        result.get("crisis", False),
+            "crisis_level":  result.get("crisis_level", "low"),
+            "device":        emotion_meta.get("device", ""),
+        }
+        st.session_state.messages.append({
+            "role":    "assistant",
+            "content": result["response"],
+            "meta":    meta,
+            "sources": result.get("sources", []),
+        })
+        if result.get("emotion"):
+            st.session_state.emotion_history.append(result["emotion"])
+        if result.get("intent"):
+            st.session_state.intent_history.append(result["intent"])
+        st.session_state.lang_history.append(result.get("language", "en"))
+        st.session_state.response_times.append(result.get("elapsed_ms", 0))
+        st.session_state.turn_count       += 1
+        st.session_state.last_crisis_level = result.get("crisis_level", "low")
+    else:
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": (
+                "⚠️ Some modules are not ready. "
+                "Check the sidebar for errors and ensure your `.env` keys are set."
+            ),
+            "meta": {}, "sources": [],
+        })
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     engine   = get_engine()
@@ -650,6 +753,15 @@ def main():
 
     # ════════════ CHAT ════════════
     with tab_chat:
+
+        # ── Chip button handler (runs before rendering so result appears immediately) ──
+        if st.session_state.pending_input:
+            msg = st.session_state.pending_input
+            st.session_state.pending_input = ""
+            _send_message(msg, engine, settings)
+            st.rerun()
+
+        # ── Chat display ───────────────────────────────────────────────────────────
         if st.session_state.messages:
             render_chat(
                 st.session_state.messages,
@@ -658,24 +770,36 @@ def main():
                 show_device=settings["show_device"],
             )
         else:
+            # Welcome box (no chips inside — chips are real buttons below)
             st.markdown("""
-            <div class="chat-container" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1rem;color:#718096;">
+            <div class="chat-container" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:.8rem;color:#718096;">
               <div style="font-size:3.5rem">🧠</div>
               <div style="font-size:1.1rem;font-weight:600;color:#4A5568">Welcome to MindBot</div>
-              <div style="text-align:center;max-width:440px;font-size:.9rem">
+              <div style="text-align:center;max-width:440px;font-size:.9rem;line-height:1.6">
                 I'm here to provide mental health support with empathy and understanding.
-                Feel free to share what's on your mind — in any language. I'm listening.
+                Share what's on your mind — in any language. I'm listening.
               </div>
-              <div style="display:flex;flex-wrap:wrap;gap:.4rem;justify-content:center;margin-top:.5rem">
-                <span class="chip">💭 I've been feeling anxious</span>
-                <span class="chip">😔 I can't sleep from stress</span>
-                <span class="chip">🙋 How to manage depression?</span>
-                <span class="chip">😤 I feel angry all the time</span>
-                <span class="chip">🌍 أشعر بالقلق (Arabic)</span>
-                <span class="chip">🌍 Je me sens seul (French)</span>
+              <div style="font-size:.82rem;color:#A0AEC0;margin-top:.3rem">
+                ↓ Tap a suggestion below to start instantly ↓
               </div>
             </div>""", unsafe_allow_html=True)
 
+            # ── Quick-start chip buttons (real clickable Streamlit buttons) ────────
+            st.markdown(
+                '<p style="text-align:center;color:#718096;font-size:.8rem;margin:.4rem 0 .2rem">✨ Quick start</p>',
+                unsafe_allow_html=True,
+            )
+            row1_cols = st.columns(3)
+            row2_cols = st.columns(3)
+            all_cols  = row1_cols + row2_cols
+
+            for i, (label, value) in enumerate(QUICK_CHIPS):
+                with all_cols[i]:
+                    if st.button(label, key=f"chip_{i}", use_container_width=True):
+                        st.session_state.pending_input = value
+                        st.rerun()
+
+        # ── Input form ─────────────────────────────────────────────────────────────
         with st.form("chat_form", clear_on_submit=True):
             col_in, col_btn = st.columns([6, 1])
             with col_in:
@@ -688,57 +812,7 @@ def main():
                 submitted = st.form_submit_button("Send ↗", use_container_width=True)
 
         if submitted and user_input.strip():
-            msg = user_input.strip()
-            st.session_state.messages.append({"role": "user", "content": msg, "meta": {}, "sources": []})
-
-            if engine and engine.status.intent:
-                with st.spinner("🧠 Processing…"):
-                    result = engine.process(
-                        msg,
-                        session_id=st.session_state.session_id,
-                        top_k=settings["top_k"],
-                        strong_model=settings["strong_model"],
-                    )
-
-                emotion_meta = result.get("emotion_meta", {})
-                meta = {
-                    "language":      result.get("language"),
-                    "language_name": result.get("language_name"),
-                    "lang_conf":     result.get("lang_conf", 0),  # fixed: was reading intent confidence
-                    "intent":        result.get("intent"),
-                    "intent_emoji":  result.get("intent_meta", {}).get("emoji", ""),
-                    "emotion":       result.get("emotion"),
-                    "emo_emoji":     emotion_meta.get("emoji", ""),
-                    "emo_conf":      emotion_meta.get("confidence", 0),
-                    "elapsed_ms":    result.get("elapsed_ms"),
-                    "crisis":        result.get("crisis", False),
-                    "crisis_level":  result.get("crisis_level", "low"),
-                    "device":        emotion_meta.get("device", ""),
-                }
-                st.session_state.messages.append({
-                    "role":    "assistant",
-                    "content": result["response"],
-                    "meta":    meta,
-                    "sources": result.get("sources", []),
-                })
-
-                if result.get("emotion"):
-                    st.session_state.emotion_history.append(result["emotion"])
-                if result.get("intent"):
-                    st.session_state.intent_history.append(result["intent"])
-                st.session_state.lang_history.append(result.get("language", "en"))
-                st.session_state.response_times.append(result.get("elapsed_ms", 0))
-                st.session_state.turn_count        += 1
-                st.session_state.last_crisis_level  = result.get("crisis_level", "low")
-            else:
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": (
-                        "⚠️ Some modules are not ready. "
-                        "Check the sidebar for errors and ensure your `.env` keys are set."
-                    ),
-                    "meta": {}, "sources": [],
-                })
+            _send_message(user_input.strip(), engine, settings)
             st.rerun()
 
     # ════════════ ANALYTICS ════════════

@@ -87,13 +87,16 @@ _RAG_TEMPLATE = """{system}
 USER EMOTION: {emotion} — respond with a {tone} tone.
 RESPOND IN: {language_name}
 
+{history_block}
 RELEVANT COUNSELING KNOWLEDGE BASE:
 {context}
 
-USER MESSAGE: {question}
+CURRENT USER MESSAGE: {question}
 
-Provide a thorough, structured, and empathetic response following the template above.
-Use markdown formatting with bold section headers. Minimum 250 words. RESPOND IN {language_name}.
+Use the conversation history above (if any) to personalize your response.
+Reference earlier topics when relevant — show the user you remember them.
+Follow the structured template above. Use markdown bold headers and bullet points.
+RESPOND FULLY IN {language_name}. Write as much as needed — do not cut short.
 
 RESPONSE:"""
 
@@ -106,9 +109,34 @@ Search query:"""
 _DIRECT_TEMPLATE = """{system}
 LANGUAGE: {language_name}
 INTENT: {intent}
-USER: {message}
+{history_block}
+USER MESSAGE: {message}
 
-Reply warmly in {language_name}. 2-4 sentences. Be genuinely engaging and caring."""
+Reply warmly in {language_name}. Be genuinely engaging, caring, and brief (3-5 sentences).
+Reference the conversation history above if relevant."""
+
+
+def _format_history(turns: list[dict]) -> str:
+    """
+    Format conversation history for injection into prompts.
+    Each entry: {"role": "user"|"assistant", "content": str}
+    Assistant turns are truncated to 600 chars to control context size.
+    """
+    if not turns:
+        return ""
+    lines = [
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"CONVERSATION HISTORY ({len(turns)} turns):",
+    ]
+    for t in turns:
+        role = "User" if t["role"] == "user" else "Assistant"
+        content = t["content"].strip()
+        # Truncate long assistant responses to keep prompt size manageable
+        if role == "Assistant" and len(content) > 600:
+            content = content[:600] + "…"
+        lines.append(f"{role}: {content}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines) + "\n\n"
 
 
 def _format_payload(payload: dict) -> str:
@@ -196,34 +224,52 @@ class RAGPipeline:
     # ── Generation ─────────────────────────────────────────────────────────────
     def answer(
         self,
-        question:         str,
-        emotion:          str  = "neutral",
-        tone:             str  = "empathetic",
-        language:         str  = "en",
-        language_name:    str  = "English",
-        top_k:            int  = 5,
-        use_strong_model: bool = True,
-        conversation_ctx: str  = "",     # last 1-2 turns for context
+        question:             str,
+        emotion:              str        = "neutral",
+        tone:                 str        = "empathetic",
+        language:             str        = "en",
+        language_name:        str        = "English",
+        top_k:                int        = 5,
+        use_strong_model:     bool       = True,
+        conversation_ctx:     str        = "",
+        conversation_history: list[dict] = None,  # full turn log for memory
     ) -> dict:
-        """Full RAG: rewrite → retrieve → generate."""
-        # Augment with conversation context for better retrieval
-        retrieval_query = f"{conversation_ctx} {question}".strip() if conversation_ctx else question
-        docs    = self.retrieve(retrieval_query, top_k=top_k, rewrite=True)
+        """
+        Full RAG: rewrite → retrieve → generate.
+
+        conversation_history: list of {"role": "user"|"assistant", "content": str}
+        representing the full conversation so far (excluding current message).
+        The LLM receives this as an explicit memory block so it can reference
+        earlier topics, emotions, and advice given in previous turns.
+        """
+        # Augment retrieval query with the most recent user turn for context
+        retrieval_query = (
+            f"{conversation_ctx} {question}".strip() if conversation_ctx else question
+        )
+        docs = self.retrieve(retrieval_query, top_k=top_k, rewrite=True)
 
         context = "\n\n---\n\n".join(
             f"[Relevance {d['score']:.2f}]\n{d['text']}"
             for d in docs
         ) if docs else "No relevant passages found in the knowledge base."
 
+        history_block = _format_history(conversation_history or [])
+
         prompt = _RAG_TEMPLATE.format(
-            system=_SYSTEM_PROMPT, emotion=emotion, tone=tone,
-            language_name=language_name, context=context, question=question,
+            system=_SYSTEM_PROMPT,
+            emotion=emotion,
+            tone=tone,
+            language_name=language_name,
+            history_block=history_block,
+            context=context,
+            question=question,
         )
         model = STRONG_MODEL if use_strong_model else WEAK_MODEL
         r = self._groq.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.65, max_tokens=1400,
+            temperature=0.65,
+            # max_tokens intentionally omitted — let the model decide its own length
         )
         return {
             "response":        r.choices[0].message.content.strip(),
@@ -235,19 +281,26 @@ class RAGPipeline:
 
     def direct_reply(
         self,
-        message:       str,
-        intent:        str = "greeting",
-        language_name: str = "English",
+        message:              str,
+        intent:               str        = "greeting",
+        language_name:        str        = "English",
+        conversation_history: list[dict] = None,  # memory for direct replies too
     ) -> dict:
-        """LLM reply without RAG (greetings, farewells, out-of-scope)."""
+        """LLM reply without RAG (greetings, farewells, gratitude, out-of-scope).
+        Receives conversation history so it can greet by name, reference prior topics, etc."""
+        history_block = _format_history(conversation_history or [])
         prompt = _DIRECT_TEMPLATE.format(
-            system=_SYSTEM_PROMPT, language_name=language_name,
-            intent=intent, message=message,
+            system=_SYSTEM_PROMPT,
+            language_name=language_name,
+            intent=intent,
+            history_block=history_block,
+            message=message,
         )
         r = self._groq.chat.completions.create(
             model=WEAK_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7, max_tokens=300,
+            temperature=0.7,
+            # max_tokens intentionally omitted — no artificial cap
         )
         return {
             "response":        r.choices[0].message.content.strip(),

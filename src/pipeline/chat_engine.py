@@ -257,6 +257,19 @@ class ChatEngine:
         intent = intent_result["intent"]
         route  = intent_result["route"]
 
+        # ── Build full conversation history for memory ─────────────────────────
+        # Format: list of {"role": "user"|"assistant", "content": str}
+        # Excludes the current message (not yet in history at this point).
+        # MAX_HISTORY controls how many turns back to look.
+        conversation_history = [
+            {"role": t.role, "content": t.content}
+            for t in history
+        ]
+
+        # Last user turn (English) for retrieval augmentation
+        user_turns_en = [t.content for t in history if t.role == "user"]
+        conv_ctx = user_turns_en[-1] if user_turns_en else ""
+
         # ── 5+6. Route by intent ───────────────────────────────────────────────
         if route == "rag" and self._rag:
             # 5. Emotion classification
@@ -270,13 +283,7 @@ class ChatEngine:
             emotion = emotion_result["emotion"]
             tone    = forced_tone or emotion_result["tone"]
 
-            # Build conversation context for retrieval (last user turn for context)
-            conv_ctx = ""
-            user_turns = [t.content for t in history if t.role == "user"]
-            if user_turns:
-                conv_ctx = user_turns[-1]
-
-            # 6. RAG generation (LLM prompted to respond in language_name)
+            # 6. RAG generation — full history injected for contextual memory
             rag_result = self._rag.answer(
                 question=en_message,
                 emotion=emotion,
@@ -286,6 +293,7 @@ class ChatEngine:
                 conversation_ctx=conv_ctx,
                 top_k=top_k,
                 use_strong_model=strong_model,
+                conversation_history=conversation_history,
             )
             response = rag_result["response"]
             sources  = rag_result["sources"]
@@ -299,9 +307,12 @@ class ChatEngine:
             emotion = None
 
             if self._rag:
-                # LLM direct reply — prompted to respond in language_name
-                direct   = self._rag.direct_reply(en_message, intent=intent,
-                                                   language_name=language_name)
+                # LLM direct reply — history injected so bot remembers prior context
+                direct   = self._rag.direct_reply(
+                    en_message, intent=intent,
+                    language_name=language_name,
+                    conversation_history=conversation_history,
+                )
                 response = direct["response"]
             else:
                 # Hard fallback when RAG module unavailable
