@@ -56,16 +56,21 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .mindbot-header p{color:#A8C5F0;font-size:.9rem;margin:0;}
 
 /* Chat */
-.chat-container{background:#fff;border-radius:16px;padding:1.5rem;min-height:460px;max-height:520px;overflow-y:auto;box-shadow:0 2px 12px rgba(0,0,0,.07);margin-bottom:1rem;border:1px solid #E2E8F0;}
+.chat-container{background:#fff;border-radius:16px;padding:1.5rem;min-height:460px;max-height:680px;overflow-y:auto;box-shadow:0 2px 12px rgba(0,0,0,.07);margin-bottom:1rem;border:1px solid #E2E8F0;}
 .msg-user{display:flex;justify-content:flex-end;margin:.6rem 0;}
 .msg-user .bubble{background:linear-gradient(135deg,#2B5BA5,#4A90D9);color:#fff;padding:.75rem 1.1rem;border-radius:18px 18px 4px 18px;max-width:72%;font-size:.95rem;line-height:1.55;box-shadow:0 2px 8px rgba(43,91,165,.3);transition:transform 0.2s ease,box-shadow 0.2s ease;}
 .msg-user .bubble:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(43,91,165,.4);}
 .msg-bot{display:flex;justify-content:flex-start;margin:.6rem 0;gap:.6rem;align-items:flex-start;}
 .bot-avatar{width:34px;height:34px;background:linear-gradient(135deg,#1a2744,#2B5BA5);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;margin-top:2px;}
-.msg-bot .bubble{background:#fff;color:#2D3748;padding:.75rem 1.1rem;border-radius:18px 18px 18px 4px;max-width:72%;font-size:.95rem;line-height:1.55;border:1px solid #E2E8F0;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:transform 0.2s ease,box-shadow 0.2s ease;}
+.msg-bot .bubble{background:#fff;color:#2D3748;padding:.85rem 1.2rem;border-radius:18px 18px 18px 4px;max-width:80%;font-size:.95rem;line-height:1.7;border:1px solid #E2E8F0;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:transform 0.2s ease,box-shadow 0.2s ease;}
 .msg-bot .bubble:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.09);}
 .msg-bot .bubble.crisis{background:#FFF5F5;border-color:#FC8181;color:#742A2A;}
 .msg-bot .bubble.medium-risk{background:#FFFBEB;border-color:#F59E0B;color:#92400E;}
+/* Markdown inside bubbles */
+.msg-bot .bubble strong{color:#1a2744;font-weight:700;}
+.msg-bot .bubble ul,.msg-bot .bubble ol{margin:.4rem 0 .4rem 1.2rem;padding:0;}
+.msg-bot .bubble li{margin:.25rem 0;}
+.msg-bot .bubble hr{border:none;border-top:1px solid #E2E8F0;margin:.6rem 0;}
 
 /* Badges */
 .meta-row{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem;}
@@ -320,21 +325,89 @@ def _badges(meta: dict, show_scores: bool, show_device: bool) -> str:
 
 
 # ── Chat renderer ──────────────────────────────────────────────────────────────
+def _md_to_html(text: str) -> str:
+    """
+    Lightweight markdown → HTML converter for chat bubbles.
+    Handles: **bold**, bullet points (•/-/*), numbered lists, horizontal rules (━+), newlines.
+    Kept simple on purpose — avoid importing a full markdown library.
+    """
+    import re
+
+    lines = text.split("\n")
+    out   = []
+    in_list = False
+
+    for line in lines:
+        stripped = line.rstrip()
+
+        # Horizontal rule (━━━ or --- or ***)
+        if re.match(r"^(━{3,}|---+|\*{3,})$", stripped):
+            if in_list:
+                out.append("</ul>"); in_list = False
+            out.append('<hr style="border:none;border-top:1px solid #E2E8F0;margin:.5rem 0">')
+            continue
+
+        # Bullet list items (•, -, *, ·)
+        bullet_m = re.match(r"^[•\-\*·]\s+(.*)", stripped)
+        if bullet_m:
+            if not in_list:
+                out.append('<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0">'); in_list = True
+            item = _inline_md(bullet_m.group(1))
+            out.append(f'<li style="margin:.2rem 0">{item}</li>')
+            continue
+
+        # Numbered list items
+        num_m = re.match(r"^\d+\.\s+(.*)", stripped)
+        if num_m:
+            if not in_list:
+                out.append('<ol style="margin:.3rem 0 .3rem 1.1rem;padding:0">'); in_list = True
+            item = _inline_md(num_m.group(1))
+            out.append(f'<li style="margin:.2rem 0">{item}</li>')
+            continue
+
+        # Close list on non-list line
+        if in_list:
+            out.append("</ul>"); in_list = False
+
+        # Empty line → paragraph break
+        if not stripped:
+            out.append('<div style="height:.4rem"></div>')
+            continue
+
+        # Normal paragraph line
+        out.append(f'<p style="margin:.1rem 0">{_inline_md(stripped)}</p>')
+
+    if in_list:
+        out.append("</ul>")
+
+    return "".join(out)
+
+
+def _inline_md(text: str) -> str:
+    """Apply inline markdown: **bold** and *italic*."""
+    import re
+    text = re.sub(r"\*\*(.+?)\*\*", r'<strong style="color:#1a2744;font-weight:700">\1</strong>', text)
+    text = re.sub(r"\*(.+?)\*",     r'<em>\1</em>', text)
+    return text
+
+
 def render_chat(messages, show_sources, show_scores, show_device):
     html = []
     for msg in messages:
         role    = msg["role"]
-        content = msg["content"].replace("\n", "<br>")
+        raw     = msg["content"]
         meta    = msg.get("meta", {})
 
         if role == "user":
+            content = raw.replace("\n", "<br>")
             html.append(f'<div class="msg-user"><div class="bubble">{content}</div></div>')
         else:
             crisis_cls = (
                 " crisis" if meta.get("crisis")
                 else (" medium-risk" if meta.get("crisis_level") == "medium" else "")
             )
-            badges = _badges(meta, show_scores, show_device)
+            badges  = _badges(meta, show_scores, show_device)
+            content = _md_to_html(raw)   # render markdown structure
             html.append(
                 f'<div class="msg-bot">'
                 f'<div class="bot-avatar">🧠</div>'
