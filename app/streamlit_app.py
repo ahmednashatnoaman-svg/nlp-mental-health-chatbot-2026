@@ -1,8 +1,19 @@
 """
-MindBot — Expert Streamlit UI  v2
+MindBot — Streamlit UI  v3
 RAG-Based Mental Health Support Chatbot · NLP Final Project 2026
+
+Fixes in v3:
+  - lang_conf now sourced from result["lang_conf"] (was incorrectly using intent confidence)
+  - strong_model and top_k sidebar settings are now forwarded to engine.process()
+  - "Translated from {language}" badge shown when user wrote in a non-English language
+  - Analytics tab: EMOTION_LABELS imported at top level, not inside render function
+  - Crisis banner shown immediately after crisis response (not on next turn)
 """
-import sys, os, uuid, json, time
+import sys
+import os
+import uuid
+import json
+import time
 from pathlib import Path
 from collections import Counter
 
@@ -47,11 +58,11 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 /* Chat */
 .chat-container{background:#fff;border-radius:16px;padding:1.5rem;min-height:460px;max-height:520px;overflow-y:auto;box-shadow:0 2px 12px rgba(0,0,0,.07);margin-bottom:1rem;border:1px solid #E2E8F0;}
 .msg-user{display:flex;justify-content:flex-end;margin:.6rem 0;}
-.msg-user .bubble{background:linear-gradient(135deg,#2B5BA5,#4A90D9);color:#fff;padding:.75rem 1.1rem;border-radius:18px 18px 4px 18px;max-width:72%;font-size:.95rem;line-height:1.55;box-shadow:0 2px 8px rgba(43,91,165,.3);transition:transform 0.2s ease, box-shadow 0.2s ease;}
+.msg-user .bubble{background:linear-gradient(135deg,#2B5BA5,#4A90D9);color:#fff;padding:.75rem 1.1rem;border-radius:18px 18px 4px 18px;max-width:72%;font-size:.95rem;line-height:1.55;box-shadow:0 2px 8px rgba(43,91,165,.3);transition:transform 0.2s ease,box-shadow 0.2s ease;}
 .msg-user .bubble:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(43,91,165,.4);}
 .msg-bot{display:flex;justify-content:flex-start;margin:.6rem 0;gap:.6rem;align-items:flex-start;}
 .bot-avatar{width:34px;height:34px;background:linear-gradient(135deg,#1a2744,#2B5BA5);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;margin-top:2px;}
-.msg-bot .bubble{background:#fff;color:#2D3748;padding:.75rem 1.1rem;border-radius:18px 18px 18px 4px;max-width:72%;font-size:.95rem;line-height:1.55;border:1px solid #E2E8F0;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:transform 0.2s ease, box-shadow 0.2s ease;}
+.msg-bot .bubble{background:#fff;color:#2D3748;padding:.75rem 1.1rem;border-radius:18px 18px 18px 4px;max-width:72%;font-size:.95rem;line-height:1.55;border:1px solid #E2E8F0;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:transform 0.2s ease,box-shadow 0.2s ease;}
 .msg-bot .bubble:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.09);}
 .msg-bot .bubble.crisis{background:#FFF5F5;border-color:#FC8181;color:#742A2A;}
 .msg-bot .bubble.medium-risk{background:#FFFBEB;border-color:#F59E0B;color:#92400E;}
@@ -62,13 +73,13 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .badge:hover{transform:scale(1.05);}
 .badge-lang{background:#2B7A0B;}.badge-intent{background:#2B5BA5;}.badge-emotion{background:#6B4B9F;}
 .badge-time{background:#4A5568;}.badge-crisis{background:#C53030;}.badge-medium{background:#D97706;}
-.badge-device{background:#0F766E;}
+.badge-device{background:#0F766E;}.badge-translated{background:#6B46C1;}
 
 /* Crisis banners */
 .crisis-banner{background:linear-gradient(135deg,#FFF5F5,#FED7D7);border:2px solid #FC8181;border-radius:12px;padding:1rem 1.25rem;margin-bottom:1rem;color:#742A2A;font-weight:500;}
 .medium-banner{background:linear-gradient(135deg,#FFFBEB,#FEF3C7);border:2px solid #F59E0B;border-radius:12px;padding:.9rem 1.25rem;margin-bottom:1rem;color:#92400E;font-weight:500;}
 
-/* Status */
+/* Status cards */
 .status-card{background:#23304a;border:1px solid #3d4f6b;border-radius:10px;padding:.6rem .8rem;margin:.3rem 0;display:flex;align-items:center;gap:.5rem;font-size:.82rem;transition:all 0.2s ease;}
 .status-card:hover{background:#2a3a5a;transform:translateX(2px);}
 .dot-green{width:10px;height:10px;border-radius:50%;background:#48BB78;flex-shrink:0;}
@@ -82,14 +93,14 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .stButton>button{background:linear-gradient(135deg,#2B5BA5,#4A90D9);color:#fff!important;border:none!important;border-radius:10px!important;padding:.55rem 1.2rem!important;font-weight:600!important;font-size:.9rem!important;transition:all .2s;box-shadow:0 2px 8px rgba(43,91,165,.25);}
 .stButton>button:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(43,91,165,.35)!important;}
 
-/* Source */
+/* Source cards */
 .source-card{background:#F7FAFC;border-left:3px solid #4A90D9;border-radius:0 8px 8px 0;padding:.7rem .9rem;font-size:.82rem;color:#4A5568;margin:.3rem 0;line-height:1.6;transition:all 0.2s ease;}
 .source-card:hover{background:#edf2f7;border-left-width:5px;}
 .source-q{color:#1a2744;font-weight:600;font-size:.8rem;margin-bottom:.3rem;}
 .source-a{color:#4A5568;font-size:.8rem;}
 
 /* Metric card */
-.metric-card{background:#fff;border-radius:12px;padding:1rem;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.06);border:1px solid #E2E8F0;transition:transform 0.2s ease, box-shadow 0.2s ease;}
+.metric-card{background:#fff;border-radius:12px;padding:1rem;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.06);border:1px solid #E2E8F0;transition:transform 0.2s ease,box-shadow 0.2s ease;}
 .metric-card:hover{transform:translateY(-2px);box-shadow:0 5px 12px rgba(0,0,0,.1);}
 .metric-card .value{font-size:1.8rem;font-weight:700;color:#2B5BA5;}
 .metric-card .label{font-size:.8rem;color:#718096;margin-top:.2rem;}
@@ -108,19 +119,29 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 """, unsafe_allow_html=True)
 
 
+# ── Lazy imports (deferred to avoid loading before models are ready) ───────────
+def _emotion_meta():
+    from src.modules.emotion_classifier import EMOTION_META
+    return EMOTION_META
+
+def _emotion_labels():
+    from src.modules.emotion_classifier import EMOTION_LABELS
+    return EMOTION_LABELS
+
+
 # ── Session state ─────────────────────────────────────────────────────────────
 def _init():
     defaults = {
-        "session_id":        str(uuid.uuid4()),
-        "messages":          [],
-        "emotion_history":   [],
-        "intent_history":    [],
-        "lang_history":      [],
-        "response_times":    [],
-        "turn_count":        0,
-        "engine_loaded":     False,
-        "engine":            None,
-        "last_crisis_level": "low",
+        "session_id":         str(uuid.uuid4()),
+        "messages":           [],
+        "emotion_history":    [],
+        "intent_history":     [],
+        "lang_history":       [],
+        "response_times":     [],
+        "turn_count":         0,
+        "engine_loaded":      False,
+        "engine":             None,
+        "last_crisis_level":  "low",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -130,7 +151,7 @@ _init()
 
 
 # ── Engine loading ─────────────────────────────────────────────────────────────
-_ENGINE_VERSION = "v4"   # bump to force cache reset
+_ENGINE_VERSION = "v5"   # bump to force cache reset
 
 @st.cache_resource(show_spinner=False)
 def _load_engine(_v=_ENGINE_VERSION):
@@ -160,18 +181,25 @@ def render_sidebar(engine):
         st.markdown("### Module Status")
         status = engine.status.summary() if engine else {}
         for label, key, tag, desc in [
-            ("Language Detection",   "language", "M1", "TF-IDF + LinearSVC"),
-            ("Emotion Classifier",   "emotion",  "M2", "DistilBERT · MPS"),
-            ("Intent Classifier",    "intent",   "M3", "Groq few-shot"),
-            ("RAG Pipeline",         "rag",      "M4", "Qdrant + BAAI/bge"),
+            ("Language Detection", "language", "M1", "TF-IDF + LinearSVC"),
+            ("Emotion Classifier", "emotion",  "M2", "DistilBERT · MPS"),
+            ("Intent Classifier",  "intent",   "M3", "Groq few-shot"),
+            ("RAG Pipeline",       "rag",      "M4", "Qdrant + BAAI/bge"),
         ]:
             ready = status.get(key, False)
             dot   = "dot-green" if ready else "dot-red"
             st.markdown(
                 f'<div class="status-card"><div class="{dot}"></div>'
-                f'<span><b>{tag}</b> {label}<br><small style="color:#94A3B8">{desc}</small></span></div>',
+                f'<span><b>{tag}</b> {label}<br>'
+                f'<small style="color:#94A3B8">{desc}</small></span></div>',
                 unsafe_allow_html=True,
             )
+        # Show load errors if any
+        errors = status.get("errors", {})
+        if errors:
+            with st.expander("⚠️ Module errors"):
+                for mod, err in errors.items():
+                    st.caption(f"**{mod}**: {err}")
 
         st.divider()
 
@@ -183,20 +211,24 @@ def render_sidebar(engine):
 
         if st.session_state.response_times:
             avg_ms = sum(st.session_state.response_times) / len(st.session_state.response_times)
-            st.caption(f"⚡ Avg response: {avg_ms:.0f}ms")
+            st.caption(f"⚡ Avg response: {avg_ms:.0f} ms")
 
         if st.session_state.emotion_history:
-            from src.modules.emotion_classifier import EMOTION_META
+            EMOTION_META = _emotion_meta()
             top_emo = Counter(st.session_state.emotion_history).most_common(1)[0]
             meta    = EMOTION_META.get(top_emo[0], {})
             st.markdown(f"**Dominant emotion:** {meta.get('emoji','')} {top_emo[0].title()}")
+
+        if st.session_state.lang_history:
+            unique_langs = list(dict.fromkeys(st.session_state.lang_history))
+            st.caption(f"🌍 Languages: {', '.join(unique_langs)}")
 
         st.divider()
 
         # Settings
         st.markdown("### Settings")
         strong_model = st.toggle("Strong model (120B)", value=True,
-                                  help="gpt-oss-120b for answers; gpt-oss-20b for greetings")
+                                  help="gpt-oss-120b for RAG answers; gpt-oss-20b for greetings")
         top_k        = st.slider("Retrieved docs", 1, 10, 5,
                                   help="Passages retrieved from Qdrant per query")
         show_sources = st.toggle("Show sources", value=True)
@@ -207,14 +239,14 @@ def render_sidebar(engine):
 
         # Actions
         if st.button("🗑️ Clear conversation"):
-            st.session_state.messages         = []
-            st.session_state.emotion_history  = []
-            st.session_state.intent_history   = []
-            st.session_state.lang_history     = []
-            st.session_state.response_times   = []
-            st.session_state.turn_count       = 0
+            st.session_state.messages          = []
+            st.session_state.emotion_history   = []
+            st.session_state.intent_history    = []
+            st.session_state.lang_history      = []
+            st.session_state.response_times    = []
+            st.session_state.turn_count        = 0
             st.session_state.last_crisis_level = "low"
-            st.session_state.session_id       = str(uuid.uuid4())
+            st.session_state.session_id        = str(uuid.uuid4())
             if engine:
                 engine.clear_history(st.session_state.session_id)
             st.rerun()
@@ -230,33 +262,59 @@ def render_sidebar(engine):
         st.divider()
         st.caption("NLP Final Project 2026\nRAG-Based Mental Health Chatbot")
 
-    return dict(strong_model=strong_model, top_k=top_k,
-                show_sources=show_sources, show_scores=show_scores,
-                show_device=show_device)
+    return dict(
+        strong_model=strong_model,
+        top_k=top_k,
+        show_sources=show_sources,
+        show_scores=show_scores,
+        show_device=show_device,
+    )
+
+
+# ── Flag map ───────────────────────────────────────────────────────────────────
+_FLAG = {
+    "en": "🇬🇧", "ar": "🇸🇦", "fr": "🇫🇷", "de": "🇩🇪",
+    "es": "🇪🇸", "it": "🇮🇹", "pt": "🇵🇹", "zh": "🇨🇳",
+    "ja": "🇯🇵", "ru": "🇷🇺", "hi": "🇮🇳", "tr": "🇹🇷",
+    "nl": "🇳🇱", "pl": "🇵🇱", "sv": "🇸🇪", "ko": "🇰🇷",
+    "bg": "🇧🇬", "el": "🇬🇷", "th": "🇹🇭", "vi": "🇻🇳",
+    "ur": "🇵🇰", "sw": "🇰🇪",
+}
 
 
 # ── Badge builder ──────────────────────────────────────────────────────────────
 def _badges(meta: dict, show_scores: bool, show_device: bool) -> str:
     parts = []
+    lang = meta.get("language", "en")
     if meta.get("language"):
-        flag = {"en":"🇬🇧","ar":"🇸🇦","fr":"🇫🇷","de":"🇩🇪","es":"🇪🇸","it":"🇮🇹",
-                "pt":"🇵🇹","zh":"🇨🇳","ja":"🇯🇵","ru":"🇷🇺","hi":"🇮🇳","tr":"🇹🇷",
-                "nl":"🇳🇱","pl":"🇵🇱","sv":"🇸🇪","ko":"🇰🇷"}.get(meta["language"], "🌐")
-        conf = f" {meta.get('lang_conf',0)*100:.0f}%" if show_scores else ""
-        parts.append(f'<span class="badge badge-lang">{flag} {meta.get("language_name","")}{conf}</span>')
+        flag = _FLAG.get(lang, "🌐")
+        conf = f" {meta.get('lang_conf', 0) * 100:.0f}%" if show_scores else ""
+        parts.append(
+            f'<span class="badge badge-lang">{flag} {meta.get("language_name", "")}{conf}</span>'
+        )
+    # Show "Translated" badge for non-English inputs
+    if lang != "en" and meta.get("language"):
+        parts.append(
+            f'<span class="badge badge-translated">🔄 Translated from {meta.get("language_name","")}</span>'
+        )
     if meta.get("intent"):
-        label = meta["intent"].replace("_"," ").title()
-        parts.append(f'<span class="badge badge-intent">{meta.get("intent_emoji","")} {label}</span>')
+        label = meta["intent"].replace("_", " ").title()
+        parts.append(
+            f'<span class="badge badge-intent">{meta.get("intent_emoji", "")} {label}</span>'
+        )
     if meta.get("emotion"):
-        conf = f" {meta.get('emo_conf',0)*100:.0f}%" if show_scores else ""
-        parts.append(f'<span class="badge badge-emotion">{meta.get("emo_emoji","")} {meta["emotion"].title()}{conf}</span>')
+        conf = f" {meta.get('emo_conf', 0) * 100:.0f}%" if show_scores else ""
+        parts.append(
+            f'<span class="badge badge-emotion">'
+            f'{meta.get("emo_emoji", "")} {meta["emotion"].title()}{conf}</span>'
+        )
     if meta.get("elapsed_ms"):
         parts.append(f'<span class="badge badge-time">⚡ {meta["elapsed_ms"]}ms</span>')
     if meta.get("crisis"):
         parts.append('<span class="badge badge-crisis">🆘 Crisis</span>')
     elif meta.get("crisis_level") == "medium":
         parts.append('<span class="badge badge-medium">💛 Sensitive</span>')
-    if show_device and meta.get("device") and meta["device"] not in ("n/a",""):
+    if show_device and meta.get("device") and meta["device"] not in ("n/a", ""):
         parts.append(f'<span class="badge badge-device">🔥 {meta["device"].upper()}</span>')
     return '<div class="meta-row">' + "".join(parts) + "</div>" if parts else ""
 
@@ -266,14 +324,17 @@ def render_chat(messages, show_sources, show_scores, show_device):
     html = []
     for msg in messages:
         role    = msg["role"]
-        content = msg["content"].replace("\n","<br>")
+        content = msg["content"].replace("\n", "<br>")
         meta    = msg.get("meta", {})
 
         if role == "user":
             html.append(f'<div class="msg-user"><div class="bubble">{content}</div></div>')
         else:
-            crisis_cls = " crisis" if meta.get("crisis") else (" medium-risk" if meta.get("crisis_level")=="medium" else "")
-            badges     = _badges(meta, show_scores, show_device)
+            crisis_cls = (
+                " crisis" if meta.get("crisis")
+                else (" medium-risk" if meta.get("crisis_level") == "medium" else "")
+            )
+            badges = _badges(meta, show_scores, show_device)
             html.append(
                 f'<div class="msg-bot">'
                 f'<div class="bot-avatar">🧠</div>'
@@ -281,123 +342,202 @@ def render_chat(messages, show_sources, show_scores, show_device):
                 f'</div>'
             )
 
-    st.markdown(f'<div class="chat-container">{"".join(html)}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="chat-container">{"".join(html)}</div>',
+        unsafe_allow_html=True,
+    )
 
-    # Sources
+    # Sources expander
     if show_sources:
-        last_bot = next((m for m in reversed(messages) if m["role"]=="assistant"), None)
+        last_bot = next(
+            (m for m in reversed(messages) if m["role"] == "assistant"), None
+        )
         if last_bot and last_bot.get("sources"):
-            with st.expander(f"📚 Knowledge base ({len(last_bot['sources'])} passages)", expanded=False):
+            with st.expander(
+                f"📚 Knowledge base ({len(last_bot['sources'])} passages)",
+                expanded=False,
+            ):
                 for i, src in enumerate(last_bot["sources"], 1):
-                    ctx  = src.get("context","")
-                    resp = src.get("response","")
+                    ctx  = src.get("context", "")
+                    resp = src.get("response", "")
                     if ctx and resp:
                         st.markdown(
                             f'<div class="source-card">'
-                            f'<div class="source-q">#{i} · score {src["score"]:.3f}</div>'
+                            f'<div class="source-q">#{i} · relevance {src["score"]:.3f}</div>'
                             f'<div class="source-q">Q: {ctx[:200]}{"…" if len(ctx)>200 else ""}</div>'
                             f'<div class="source-a">A: {resp[:300]}{"…" if len(resp)>300 else ""}</div>'
-                            f'</div>', unsafe_allow_html=True,
+                            f'</div>',
+                            unsafe_allow_html=True,
                         )
                     else:
-                        text = src.get("text","")
+                        text = src.get("text", "")
                         st.markdown(
                             f'<div class="source-card">'
-                            f'<div class="source-q">#{i} · score {src["score"]:.3f}</div>'
+                            f'<div class="source-q">#{i} · relevance {src["score"]:.3f}</div>'
                             f'{text[:350]}{"…" if len(text)>350 else ""}'
-                            f'</div>', unsafe_allow_html=True,
+                            f'</div>',
+                            unsafe_allow_html=True,
                         )
 
 
 # ── Analytics tab ──────────────────────────────────────────────────────────────
 def render_analytics():
-    st.markdown('<div class="section-title">📊 Session Analytics</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title">📊 Session Analytics</div>',
+        unsafe_allow_html=True,
+    )
     emo  = st.session_state.emotion_history
     ints = st.session_state.intent_history
     rts  = st.session_state.response_times
     n    = st.session_state.turn_count
 
-    k1,k2,k3,k4 = st.columns(4)
-    k1.markdown(f'<div class="metric-card"><div class="value">{n}</div><div class="label">Total Turns</div></div>', unsafe_allow_html=True)
-    k2.markdown(f'<div class="metric-card"><div class="value">{len(set(emo))}</div><div class="label">Unique Emotions</div></div>', unsafe_allow_html=True)
-    k3.markdown(f'<div class="metric-card"><div class="value">{ints.count("asking_mental_health_question")}</div><div class="label">RAG Queries</div></div>', unsafe_allow_html=True)
+    # Key metrics
+    k1, k2, k3, k4 = st.columns(4)
+    k1.markdown(
+        f'<div class="metric-card"><div class="value">{n}</div>'
+        f'<div class="label">Total Turns</div></div>',
+        unsafe_allow_html=True,
+    )
+    k2.markdown(
+        f'<div class="metric-card"><div class="value">{len(set(emo))}</div>'
+        f'<div class="label">Unique Emotions</div></div>',
+        unsafe_allow_html=True,
+    )
+    k3.markdown(
+        f'<div class="metric-card">'
+        f'<div class="value">{ints.count("asking_mental_health_question")}</div>'
+        f'<div class="label">RAG Queries</div></div>',
+        unsafe_allow_html=True,
+    )
     avg_rt = f"{sum(rts)/len(rts):.0f}ms" if rts else "—"
-    k4.markdown(f'<div class="metric-card"><div class="value">{avg_rt}</div><div class="label">Avg Response</div></div>', unsafe_allow_html=True)
+    k4.markdown(
+        f'<div class="metric-card"><div class="value">{avg_rt}</div>'
+        f'<div class="label">Avg Response</div></div>',
+        unsafe_allow_html=True,
+    )
 
     st.markdown("<br>", unsafe_allow_html=True)
     col_l, col_r = st.columns(2)
 
+    # Emotion distribution
     with col_l:
         st.markdown("#### Emotion Distribution")
         if emo:
-            from src.modules.emotion_classifier import EMOTION_META
+            EMOTION_META = _emotion_meta()
             ec = Counter(emo)
             fig = go.Figure(go.Bar(
-                x=list(ec.keys()), y=list(ec.values()),
-                marker_color=[EMOTION_META.get(e,{}).get("color","#4A90D9") for e in ec],
-                text=list(ec.values()), textposition="outside",
+                x=list(ec.keys()),
+                y=list(ec.values()),
+                marker_color=[EMOTION_META.get(e, {}).get("color", "#4A90D9") for e in ec],
+                text=list(ec.values()),
+                textposition="outside",
             ))
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                              margin=dict(t=20,b=20,l=20,r=20), height=270,
-                              xaxis=dict(showgrid=False), yaxis=dict(showgrid=True,gridcolor="#E2E8F0"),
-                              font=dict(family="Inter"))
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(t=20, b=20, l=20, r=20), height=270,
+                xaxis=dict(showgrid=False),
+                yaxis=dict(showgrid=True, gridcolor="#E2E8F0"),
+                font=dict(family="Inter"),
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No emotion data yet.")
+            st.info("No emotion data yet. Start chatting to see emotion trends.")
 
+    # Intent breakdown
     with col_r:
         st.markdown("#### Intent Breakdown")
         if ints:
             ic = Counter(ints)
-            labels = [i.replace("_"," ").title() for i in ic]
+            labels = [i.replace("_", " ").title() for i in ic]
             fig2 = go.Figure(go.Pie(
-                labels=labels, values=list(ic.values()),
-                marker=dict(colors=["#2B5BA5","#82B366","#6B4B9F","#D79B00","#FC8181"][:len(labels)]),
-                hole=0.45, textinfo="label+percent", textfont_size=11,
+                labels=labels,
+                values=list(ic.values()),
+                marker=dict(
+                    colors=["#2B5BA5", "#82B366", "#6B4B9F", "#D79B00", "#FC8181"][: len(labels)]
+                ),
+                hole=0.45,
+                textinfo="label+percent",
+                textfont_size=11,
             ))
-            fig2.update_layout(paper_bgcolor="rgba(0,0,0,0)",
-                               margin=dict(t=20,b=20,l=20,r=20),
-                               height=270, showlegend=False, font=dict(family="Inter"))
+            fig2.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                margin=dict(t=20, b=20, l=20, r=20),
+                height=270,
+                showlegend=False,
+                font=dict(family="Inter"),
+            )
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("No intent data yet.")
 
+    # Language distribution
+    lang_hist = st.session_state.lang_history
+    if lang_hist:
+        st.markdown("#### Language Distribution")
+        lc = Counter(lang_hist)
+        fig_lang = go.Figure(go.Bar(
+            x=list(lc.keys()),
+            y=list(lc.values()),
+            marker_color="#4A90D9",
+            text=list(lc.values()),
+            textposition="outside",
+        ))
+        fig_lang.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(t=20, b=20, l=20, r=20), height=220,
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor="#E2E8F0"),
+            font=dict(family="Inter"),
+        )
+        st.plotly_chart(fig_lang, use_container_width=True)
+
+    # Response time chart
     if rts and len(rts) >= 2:
         st.markdown("#### Response Time Over Conversation")
         fig3 = go.Figure(go.Scatter(
-            x=list(range(1, len(rts)+1)), y=rts,
+            x=list(range(1, len(rts) + 1)),
+            y=rts,
             mode="lines+markers",
             marker=dict(size=8, color="#4A90D9"),
             line=dict(color="#4A90D9", width=2),
-            fill="tozeroy", fillcolor="rgba(74,144,217,0.1)",
+            fill="tozeroy",
+            fillcolor="rgba(74,144,217,0.1)",
         ))
         fig3.update_layout(
             xaxis=dict(title="Turn", showgrid=False),
             yaxis=dict(title="ms", showgrid=True, gridcolor="#E2E8F0"),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(t=20,b=40,l=60,r=20), height=220, font=dict(family="Inter"),
+            margin=dict(t=20, b=40, l=60, r=20), height=220,
+            font=dict(family="Inter"),
         )
         st.plotly_chart(fig3, use_container_width=True)
 
+    # Emotion timeline
     if emo and len(emo) >= 2:
         st.markdown("#### Emotion Timeline")
-        from src.modules.emotion_classifier import EMOTION_LABELS, EMOTION_META
+        EMOTION_META   = _emotion_meta()
+        EMOTION_LABELS = _emotion_labels()
         emo_int = {e: i for i, e in enumerate(EMOTION_LABELS)}
-        ys = [emo_int.get(e, 0) for e in emo]
-        colors = [EMOTION_META.get(e,{}).get("color","#4A90D9") for e in emo]
+        ys      = [emo_int.get(e, 0) for e in emo]
+        colors  = [EMOTION_META.get(e, {}).get("color", "#4A90D9") for e in emo]
         fig4 = go.Figure()
         fig4.add_trace(go.Scatter(
-            x=list(range(1, len(ys)+1)), y=ys,
+            x=list(range(1, len(ys) + 1)),
+            y=ys,
             mode="lines+markers",
             marker=dict(size=10, color=colors),
             line=dict(color="#4A90D9", width=2),
         ))
         fig4.update_layout(
-            yaxis=dict(tickvals=list(emo_int.values()), ticktext=list(emo_int.keys()),
-                       showgrid=True, gridcolor="#E2E8F0"),
+            yaxis=dict(
+                tickvals=list(emo_int.values()),
+                ticktext=list(emo_int.keys()),
+                showgrid=True, gridcolor="#E2E8F0",
+            ),
             xaxis=dict(title="Turn", showgrid=False),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(t=20,b=40,l=80,r=20), height=240, font=dict(family="Inter"),
+            margin=dict(t=20, b=40, l=80, r=20), height=240,
+            font=dict(family="Inter"),
         )
         st.plotly_chart(fig4, use_container_width=True)
 
@@ -418,11 +558,19 @@ def main():
     </div>""", unsafe_allow_html=True)
 
     # Crisis banners
-    level = st.session_state.get("last_crisis_level","low")
+    level = st.session_state.get("last_crisis_level", "low")
     if level == "high":
-        st.markdown('<div class="crisis-banner">🆘 <b>Crisis signal detected.</b> Emergency resources provided. Please reach out to a helpline immediately.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="crisis-banner">🆘 <b>Crisis signal detected.</b> '
+            'Emergency resources provided. Please reach out to a helpline immediately.</div>',
+            unsafe_allow_html=True,
+        )
     elif level == "medium":
-        st.markdown('<div class="medium-banner">💛 <b>Difficult moment detected.</b> Response has been adapted with extra care. You are not alone.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="medium-banner">💛 <b>Difficult moment detected.</b> '
+            'Response has been adapted with extra care. You are not alone.</div>',
+            unsafe_allow_html=True,
+        )
 
     # Tabs
     tab_chat, tab_analytics, tab_about = st.tabs(["💬 Chat", "📊 Analytics", "ℹ️ About"])
@@ -441,69 +589,82 @@ def main():
             <div class="chat-container" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1rem;color:#718096;">
               <div style="font-size:3.5rem">🧠</div>
               <div style="font-size:1.1rem;font-weight:600;color:#4A5568">Welcome to MindBot</div>
-              <div style="text-align:center;max-width:420px;font-size:.9rem">
+              <div style="text-align:center;max-width:440px;font-size:.9rem">
                 I'm here to provide mental health support with empathy and understanding.
-                Feel free to share what's on your mind — I'm listening.
+                Feel free to share what's on your mind — in any language. I'm listening.
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:.4rem;justify-content:center;margin-top:.5rem">
                 <span class="chip">💭 I've been feeling anxious</span>
                 <span class="chip">😔 I can't sleep from stress</span>
                 <span class="chip">🙋 How to manage depression?</span>
                 <span class="chip">😤 I feel angry all the time</span>
+                <span class="chip">🌍 أشعر بالقلق (Arabic)</span>
+                <span class="chip">🌍 Je me sens seul (French)</span>
               </div>
             </div>""", unsafe_allow_html=True)
 
         with st.form("chat_form", clear_on_submit=True):
-            col_in, col_btn = st.columns([6,1])
+            col_in, col_btn = st.columns([6, 1])
             with col_in:
-                user_input = st.text_input("msg", placeholder="Share what's on your mind…",
-                                           label_visibility="collapsed")
+                user_input = st.text_input(
+                    "msg",
+                    placeholder="Share what's on your mind… (any language)",
+                    label_visibility="collapsed",
+                )
             with col_btn:
                 submitted = st.form_submit_button("Send ↗", use_container_width=True)
 
         if submitted and user_input.strip():
             msg = user_input.strip()
-            st.session_state.messages.append({"role":"user","content":msg,"meta":{},"sources":[]})
+            st.session_state.messages.append({"role": "user", "content": msg, "meta": {}, "sources": []})
 
             if engine and engine.status.intent:
                 with st.spinner("🧠 Processing…"):
-                    result = engine.process(msg, session_id=st.session_state.session_id)
+                    result = engine.process(
+                        msg,
+                        session_id=st.session_state.session_id,
+                        top_k=settings["top_k"],
+                        strong_model=settings["strong_model"],
+                    )
 
                 emotion_meta = result.get("emotion_meta", {})
                 meta = {
                     "language":      result.get("language"),
                     "language_name": result.get("language_name"),
-                    "lang_conf":     result.get("intent_meta",{}).get("confidence",0),
+                    "lang_conf":     result.get("lang_conf", 0),  # fixed: was reading intent confidence
                     "intent":        result.get("intent"),
-                    "intent_emoji":  result.get("intent_meta",{}).get("emoji",""),
+                    "intent_emoji":  result.get("intent_meta", {}).get("emoji", ""),
                     "emotion":       result.get("emotion"),
-                    "emo_emoji":     emotion_meta.get("emoji",""),
-                    "emo_conf":      emotion_meta.get("confidence",0),
+                    "emo_emoji":     emotion_meta.get("emoji", ""),
+                    "emo_conf":      emotion_meta.get("confidence", 0),
                     "elapsed_ms":    result.get("elapsed_ms"),
-                    "crisis":        result.get("crisis",False),
-                    "crisis_level":  result.get("crisis_level","low"),
-                    "device":        emotion_meta.get("device",""),
+                    "crisis":        result.get("crisis", False),
+                    "crisis_level":  result.get("crisis_level", "low"),
+                    "device":        emotion_meta.get("device", ""),
                 }
                 st.session_state.messages.append({
                     "role":    "assistant",
                     "content": result["response"],
                     "meta":    meta,
-                    "sources": result.get("sources",[]),
+                    "sources": result.get("sources", []),
                 })
 
                 if result.get("emotion"):
                     st.session_state.emotion_history.append(result["emotion"])
                 if result.get("intent"):
                     st.session_state.intent_history.append(result["intent"])
-                st.session_state.lang_history.append(result.get("language","en"))
-                st.session_state.response_times.append(result.get("elapsed_ms",0))
-                st.session_state.turn_count         += 1
-                st.session_state.last_crisis_level   = result.get("crisis_level","low")
+                st.session_state.lang_history.append(result.get("language", "en"))
+                st.session_state.response_times.append(result.get("elapsed_ms", 0))
+                st.session_state.turn_count        += 1
+                st.session_state.last_crisis_level  = result.get("crisis_level", "low")
             else:
                 st.session_state.messages.append({
-                    "role":"assistant",
-                    "content":"⚠️ Some modules are not ready. Check the sidebar and ensure your `.env` keys are set.",
-                    "meta":{},"sources":[],
+                    "role": "assistant",
+                    "content": (
+                        "⚠️ Some modules are not ready. "
+                        "Check the sidebar for errors and ensure your `.env` keys are set."
+                    ),
+                    "meta": {}, "sources": [],
                 })
             st.rerun()
 
@@ -518,23 +679,26 @@ def main():
 
 **MindBot** is a RAG-Based Mental Health Support Chatbot — NLP Final Project 2026.
 
-### Pipeline Architecture
+### Pipeline Architecture (v3 — revised order)
 ```
-User Message
+User Message (any language)
      │
      ▼
-[Crisis Check]            ← 3-level scoring (HIGH/MEDIUM/LOW)
+[M1: Language Detection]      ← TF-IDF char n-grams + LinearSVC (20 languages)
+     │                           Unicode script detection for Arabic/CJK/Thai/Cyrillic
+     ▼
+[Translate → English]         ← Groq gpt-oss-20b (if non-English)
      │
      ▼
-[M1: Language Detection]  ← TF-IDF char n-grams + LinearSVC (20 languages)
+[Crisis Check]                ← 3-level scoring (HIGH/MEDIUM/LOW) on English text
+     │                           Catches non-English crisis messages via translation
+     ├── HIGH → Immediate crisis resources (translated back to user's language)
      │
      ▼
-[Translation → English]   ← Groq gpt-oss-20b (if non-English)
+[M3: Intent Classification]   ← Few-shot Groq gpt-oss-20b
      │
-     ▼
-[M3: Intent Classification] ← Few-shot LLM (gpt-oss-20b)
-     │
-     ├── greeting/goodbye/gratitude/out_of_scope → Direct LLM reply
+     ├── greeting/goodbye/gratitude/out_of_scope
+     │       └── Direct LLM reply in user's language
      │
      └── asking_mental_health_question
                │
@@ -543,10 +707,15 @@ User Message
                │
                ▼
          [M4: RAG Pipeline]            ← Qdrant + BAAI/bge-base-en-v1.5 + gpt-oss-120b
-               │
+               │                           LLM responds directly in detected language
                ▼
-         [Translate Response Back]     ← if non-English input
+         Response to User
 ```
+
+### Why language detection runs BEFORE crisis check
+Non-English crisis messages (e.g., Arabic "أريد الانتحار") would be missed
+if crisis detection ran on the raw text. By detecting language first and
+translating to English, crisis keywords match reliably for all 20 supported languages.
 
 ### Datasets
 | Module | Dataset | Size |
@@ -559,21 +728,21 @@ User Message
 | Component | Technology |
 |-----------|-----------|
 | Language Detection | TF-IDF char n-grams + LinearSVC (sklearn) |
-| Emotion | DistilBERT fine-tuned (HuggingFace Transformers) · **MPS** |
+| Emotion | DistilBERT fine-tuned (HuggingFace Transformers) · **MPS/CUDA/CPU** |
 | Intent | Few-shot Groq `gpt-oss-20b` |
 | Embeddings | `BAAI/bge-base-en-v1.5` (768-dim) · **MPS** |
 | Vector DB | Qdrant Cloud (free tier) |
 | LLM | Groq `gpt-oss-120b` / `gpt-oss-20b` |
-| UI | Streamlit 1.58 |
+| UI | Streamlit 1.35+ |
 | API | FastAPI + uvicorn |
 
 ### Bonus Features
-- 🆘 3-level crisis detection (HIGH/MEDIUM/LOW)
-- 🌍 Multi-language support with translation
+- 🆘 3-level crisis detection (HIGH/MEDIUM/LOW) — multilingual safety net
+- 🌍 20-language support with automatic translation (in AND out)
 - 💬 Conversation memory (last 10 turns used in RAG context)
-- 📊 Real-time analytics dashboard
-- 💾 Chat export
-- 🔥 MPS acceleration (Apple Silicon)
+- 📊 Real-time analytics: emotion timeline, intent breakdown, language distribution
+- 💾 JSON chat export
+- 🔥 MPS/CUDA/CPU hardware acceleration auto-detect
         """)
 
 

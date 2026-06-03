@@ -1,133 +1,143 @@
 # 🧠 MindBot — RAG-Based Mental Health Support Chatbot
 ### NLP Final Project 2026
 
-MindBot is a production-ready, end-to-end mental health chatbot integrating **4 NLP modules** into a single pipeline. It features an interactive, highly-responsive Streamlit UI (with live analytics) and a FastAPI REST API backend. 
+MindBot is a production-ready, end-to-end mental health chatbot that integrates **4 NLP modules** into a unified pipeline. It features:
 
-The chatbot utilizes an auto-detect translation pipeline that dynamically detects the user's input language, processes the request internally using semantic models (Qdrant & DistilBERT), and directly replies in the exact language the user queried with—ensuring seamless native conversations without double-translation errors.
-
----
-
-## 🌟 Key Features
-* 🆘 **Crisis Detection (Override Layer)**: Real-time keyword scanning that immediately detects high-risk expressions, overrides pipeline routing, and outputs local emergency hotlines.
-* 🌍 **Auto-Detect Multi-Language Support**: Dynamically detects the user's language (via a layered Unicode/TF-IDF/langdetect engine) and replies natively.
-* ⚡ **Plug-and-Play Cloud Fallbacks**: Seamless fallback handling for language detection (`langdetect`) and emotion classification (HuggingFace Hub) for zero-config deployment on platforms like Streamlit Cloud.
-* 💬 **Contextual Turn Memory**: Tracks the last 10 turns of conversation history and appends them to the Qdrant retrieval search query for context-aware counseling responses.
-* 📊 **Interactive Session Analytics**: Real-time Plotly charts detailing emotion timelines, dominant emotion frequencies, intent distributions, and response speed over the course of the session.
-* 💾 **JSON Session Export**: Export the complete conversation history directly as a downloadable JSON file for offline record-keeping.
+- **20-language automatic detection and translation** — Arabic, Chinese, French, Spanish, German, and 15 more
+- **3-level multilingual crisis detection** — catches crisis signals in English, Arabic, French, and Spanish
+- **MPS/CUDA/CPU hardware acceleration** — Apple Silicon first, falls back gracefully
+- **Real-time Plotly analytics** — emotion timeline, intent distribution, language distribution, response time
+- **FastAPI REST API** — full pipeline exposed with detailed response schemas
+- **Streamlit Cloud deployable** — zero-config fallback layers (langdetect + HuggingFace Hub)
 
 ---
 
-## ⚙️ Tech Stack
-* **Traditional Machine Learning**: scikit-learn (TF-IDF char n-grams + LinearSVC) for fast, low-footprint language detection.
-* **Deep Learning**: PyTorch + Hugging Face Transformers (`distilbert-base-uncased-emotion` sequence classification).
-* **Embeddings**: sentence-transformers (`BAAI/bge-base-en-v1.5`, 768-dim, normalized Cosine distance).
-* **Vector Store**: Qdrant Cloud.
-* **Large Language Models (LLM)**: Groq API (`openai/gpt-oss-120b` for full RAG synthesis and `openai/gpt-oss-20b` for few-shot intent routing and translation).
-* **UI & API layers**: Streamlit 1.35+ and FastAPI (Uvicorn).
-* **Hardware Acceleration**: Auto-detects and prioritizes **MPS** (Apple Silicon) or **CUDA** (NVIDIA GPUs) for deep learning inference.
+## 🏗️ Architecture & Pipeline Flow
 
----
+### Pipeline Order (v3 — safety-first revision)
 
-## 📐 Architecture & Pipeline Flow
-The following diagram describes the end-to-end pipeline processing:
-
-```mermaid
-graph TD
-    A[User Input Message] --> B[Crisis Detection Layer]
-    B -- High Risk --> C[Immediate Emergency helpline response]
-    B -- Low/Medium Risk --> D[Module 1: Language Detection]
-    D --> E{Is Language English?}
-    E -- No --> F[Translate Message to English via Groq]
-    E -- Yes --> G[English message representation]
-    F --> G
-    G --> H[Module 3: Intent Classification]
-    H -- greeting/goodbye/gratitude/out_of_scope --> I[Direct Response in detected language via Groq]
-    H -- asking_mental_health_question --> J[Module 2: Emotion Classification]
-    J --> K[Format Emotion & Empathetic Tone]
-    K --> L[Retrieve Context from Qdrant Vector DB]
-    L --> M[RAG Response Generation directly in User Language via Groq]
-    I --> N[Output Message to UI]
-    M --> N
 ```
+User Input  (any language)
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  M1: Language Detection                 │  TF-IDF char n-grams + LinearSVC
+│      Layer 1: Unicode script detection  │  Arabic, CJK, Thai, Cyrillic, Greek,
+│              (instant, no model needed) │  Devanagari — 100% reliable
+│      Layer 2: ASCII short-text default  │  ≤4 words, no accents → English
+│      Layer 3: TF-IDF + LinearSVC model  │  70k training samples, 20 languages
+│           OR: langdetect fallback       │  cloud deployment fallback
+└─────────────────────────────────────────┘
+      │
+      ▼ (if non-English)
+┌─────────────────────────────────────────┐
+│  Translation → English                  │  Groq gpt-oss-20b
+│  (for NLP processing: crisis, intent,   │  Raw message preserved for history
+│   emotion — all English-based models)   │
+└─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  Crisis Detection (3-level)             │  On English text — catches all languages
+│  HIGH  (score ≥ 10): emergency helpline │  Multi-lang keywords: AR, FR, ES + EN
+│  MEDIUM (score 5-9): empathetic route   │  Translated back to user's language
+│  LOW    (score 0-4): normal pipeline    │
+└─────────────────────────────────────────┘
+      │
+      ▼ (LOW/MEDIUM only)
+┌─────────────────────────────────────────┐
+│  M3: Intent Classification              │  Few-shot Groq gpt-oss-20b
+│  → greeting / goodbye / gratitude       │  Direct LLM reply in user's language
+│  → out_of_scope                         │  Direct LLM reply
+│  → asking_mental_health_question        │  → RAG path below
+└─────────────────────────────────────────┘
+      │ (asking_mental_health_question)
+      ▼
+┌─────────────────────────────────────────┐
+│  M2: Emotion Classification             │  DistilBERT fine-tuned (dair-ai/emotion)
+│  Classes: sadness / joy / love /        │  MPS → CUDA → CPU auto-select
+│           anger / fear / surprise       │  Confidence + all_scores returned
+└─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  M4: RAG Pipeline                       │  BAAI/bge-base-en-v1.5 (768-dim)
+│  Query rewriting → Qdrant search →      │  Cosine similarity, free cloud tier
+│  Prompt with emotion + tone + language  │  Groq gpt-oss-120b generates response
+│  Response generated in user's language  │  directly via RESPOND IN: instruction
+└─────────────────────────────────────────┘
+      │
+      ▼
+  Response to User
+```
+
+### Why language detection runs FIRST (v3 safety fix)
+
+Previous versions ran crisis detection on the raw (untranslated) message. Non-English crisis messages (e.g., Arabic **"أريد الانتحار"**) were missed entirely. In v3, language detection and translation happen first, so crisis detection always operates on English text — reliably detecting crisis signals in all 20 supported languages.
 
 ---
 
 ## 📂 Project Structure
+
 ```
 NLP_Final_Project/
 │
 ├── notebooks/
-│   ├── 01_language_detection.ipynb    ← Module 1: TF-IDF + LinearSVC Notebook
-│   ├── 02_emotion_classifier.ipynb    ← Module 2: DistilBERT Training Notebook
-│   ├── 03_intent_classifier.ipynb     ← Module 3: Few-shot Prompting Notebook
-│   └── 04_rag_pipeline.ipynb          ← Module 4: Qdrant Retrieval and RAG Notebook
+│   ├── 01_language_detection.ipynb    ← M1: TF-IDF + LinearSVC training & eval
+│   ├── 02_emotion_classifier.ipynb    ← M2: DistilBERT fine-tuning & eval
+│   ├── 03_intent_classifier.ipynb     ← M3: Few-shot prompting demonstration
+│   └── 04_rag_pipeline.ipynb          ← M4: Qdrant retrieval & RAG evaluation
 │
 ├── src/
 │   ├── modules/
-│   │   ├── language_detector.py       ← M1: layered Unicode/TF-IDF detector
-│   │   ├── emotion_classifier.py      ← M2: MPS-accelerated DistilBERT classifier
-│   │   ├── intent_classifier.py       ← M3: Groq few-shot intent parser
-│   │   └── rag_pipeline.py            ← M4: Qdrant query, retrieval, and RAG execution
+│   │   ├── language_detector.py       ← M1: 3-layer Unicode/TF-IDF/langdetect
+│   │   ├── emotion_classifier.py      ← M2: DistilBERT with MPS acceleration
+│   │   ├── intent_classifier.py       ← M3: Groq few-shot, 5 intent classes
+│   │   └── rag_pipeline.py            ← M4: Qdrant + bge embeddings + Groq LLM
 │   │
 │   ├── pipeline/
-│   │   └── chat_engine.py             ← Main orchestrator containing session state
+│   │   └── chat_engine.py             ← Orchestrator: lang→translate→crisis→intent→RAG
 │   │
 │   └── utils/
-│       ├── preprocessing.py           ← Text scrubbing and cleaning utilities
-│       └── crisis_detector.py         ← Crisis keyword matcher and hotline output
+│       ├── preprocessing.py           ← Text cleaning, chunking, QA formatting
+│       └── crisis_detector.py         ← Multilingual crisis keyword scorer (EN/AR/FR/ES)
 │
 ├── app/
-│   └── streamlit_app.py               ← Premium UI & Plotly analytics dashboard
+│   └── streamlit_app.py               ← UI v3: Plotly analytics, translation badge, fixed bugs
 │
 ├── api/
-│   └── server.py                      ← FastAPI REST endpoint and schemas
+│   └── server.py                      ← FastAPI v2: full schemas with lang_conf, crisis_level
 │
 ├── scripts/
-│   ├── train_language_model.py        ← Script to train M1 and save pickle
-│   ├── train_emotion_model.py         ← Script to train/download M2 locally
-│   └── ingest_rag.py                  ← Script to load dataset and ingest Qdrant
+│   ├── train_language_model.py        ← Train M1, save models/language_detector.pkl
+│   ├── train_emotion_model.py         ← Fine-tune M2, save models/emotion_distilbert/
+│   └── ingest_rag.py                  ← Load dataset, embed, upsert to Qdrant (full payload)
 │
-├── data/                              ← Training datasets (Ignored in Git)
-├── models/                            ← Serialized model weights (Ignored in Git)
-├── requirements.txt                   ← Dependencies listing
-├── .env.example                       ← Environment variable template
-└── .gitignore                         ← Strict repository ignore filter
+├── tests/
+│   └── test_suite.py                  ← 8-section test suite: 50+ assertions
+│
+├── data/                              ← Datasets (git-ignored)
+├── models/                            ← Trained weights (git-ignored)
+├── requirements.txt
+├── .env.example
+└── Makefile
 ```
-
----
-
-## 🛢️ Qdrant Payload Schema
-Data ingested into Qdrant follows this payload configuration:
-* `context`: Original patient question text.
-* `response`: Ground-truth counselor response text.
-* `chunk`: Clean text segment used for embeddings.
-* `chunk_idx`: Position index within the source document.
-* `total_chunks`: Total segments divided from the document.
-* `source_row_id`: Dataset source row number.
 
 ---
 
 ## 🔑 Environment Variables
-Copy `.env.example` to `.env` in the root directory:
+
+Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
 
-Define the following keys in your `.env` file:
-
-| Variable | Description | Example / Required |
-|----------|-------------|-------------------|
-| `GROQ_API_KEY` | API key from console.groq.com | Required (starts with `gsk_`) |
-| `QDRANT_URL` | Vector DB Cluster HTTPS endpoint URL | Required (from cloud.qdrant.io) |
-| `QDRANT_API_KEY` | Database read/write API authorization key | Required |
-| `LLM_API_KEY` | Alias for GROQ_API_KEY | Optional fallback |
-
----
-
-## 🛠️ Prerequisites
-* Python 3.9 to 3.13.
-* PyTorch-compatible platform (macOS with Metal Core/MPS, Linux with CUDA, or basic CPU).
-* Free accounts on **Groq Cloud** and **Qdrant Cloud**.
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `LLM_API_KEY` | Groq API key from [console.groq.com](https://console.groq.com/keys) | **Yes** |
+| `QDRANT_CLUSTER_ENDPOINT` | Qdrant Cloud HTTPS URL from [cloud.qdrant.io](https://cloud.qdrant.io) | **Yes** |
+| `QDRANT_API_KEY` | Qdrant Cloud read/write API key | **Yes** |
+| `GROQ_API_KEY` | Alias for `LLM_API_KEY` (either works) | Optional alias |
 
 ---
 
@@ -138,71 +148,217 @@ Define the following keys in your `.env` file:
 pip install -r requirements.txt
 ```
 
-### 2. Run Module Training (Optional)
-If running locally, you can train/cache the local weights files:
+### 2. Configure API Keys
 ```bash
-# Train M1 (Language Detector)
+cp .env.example .env
+# Edit .env with your Groq and Qdrant keys
+```
+
+### 3. Train / Download Models (Optional for local deployment)
+
+Modules have cloud fallbacks — if local models don't exist, they auto-download:
+
+```bash
+# M1: Train language detector (saves models/language_detector.pkl)
 python scripts/train_language_model.py
 
-# Download/Fine-tune M2 (Emotion Classifier)
+# M2: Fine-tune emotion classifier (saves models/emotion_distilbert/)
 python scripts/train_emotion_model.py
 ```
-*(If local models are not trained/cached, the application automatically uses the Hugging Face Hub/langdetect cloud fallback layers).*
 
-### 3. Ingest Data into Qdrant Cloud (One-time Setup)
-Ingest the counseling conversations dataset into your remote Qdrant database:
+> **Note:** If local models are absent, M1 falls back to `langdetect` and M2 falls back
+> to `bhadresh-savani/distilbert-base-uncased-emotion` from HuggingFace Hub. The app
+> starts without training — ideal for Streamlit Cloud deployment.
+
+### 4. Ingest Data into Qdrant (One-time Setup)
 ```bash
 python scripts/ingest_rag.py
 ```
 
-### 4. Start the Application
-To run the Streamlit user interface:
+> The collection `health-counseling-dataset` stores full `context` + `response` payloads
+> alongside the embedded chunk, enabling rich source display in the UI.
+
+### 5. Launch the Application
+
+**Streamlit UI:**
 ```bash
 streamlit run app/streamlit_app.py
+# Opens at http://localhost:8501
 ```
-To run the FastAPI server:
+
+**FastAPI REST API:**
 ```bash
 uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
+# Swagger docs at http://localhost:8000/docs
 ```
-Access the interactive API Swagger docs at `http://localhost:8000/docs`.
+
+**Makefile shortcuts:**
+```bash
+make install      # pip install -r requirements.txt
+make train-lang   # python scripts/train_language_model.py
+make train-emotion # python scripts/train_emotion_model.py
+make ingest       # python scripts/ingest_rag.py
+make app          # streamlit run app/streamlit_app.py
+make api          # uvicorn api.server:app ...
+make train-all    # train-lang + train-emotion
+```
 
 ---
 
 ## 🧪 Testing & Evaluation
-Verify components, integrations, and session storage logic using the automated test suite.
+
 ```bash
-python3 tests/test_suite.py
+python tests/test_suite.py
 ```
-The test suite performs **44 assertions** covering:
-1. Preprocessing and scrubbing utilities.
-2. Crisis override levels (High, Medium, Low thresholds).
-3. Intent routing (greeting, goodbye, out-of-scope, mental health).
-4. Qdrant connection and vector retrieval scores.
-5. End-to-end Chat Engine pipeline execution and session history memory.
+
+The test suite covers **8 sections** with **50+ assertions**:
+
+| Section | Tests |
+|---------|-------|
+| 1. Preprocessing utilities | clean_text, chunk_text, build_qa_chunk, edge cases |
+| 2. Crisis detector | English HIGH/MEDIUM/LOW, Arabic HIGH/MEDIUM, false-positive guards |
+| 3. Language detector (M1) | Script detection for 7 scripts, English defaults, Latin models |
+| 4. Intent classifier (M3) | 11 intent cases, field validation, empty input |
+| 5. RAG pipeline (M4) | Retrieval quality, query rewriting, full RAG, direct reply |
+| 6. Chat engine (E2E) | All pipeline keys, lang_conf fix, Arabic crisis, session memory |
+| 7. Import smoke tests | All 7 modules, constant consistency checks |
+| 8. API model validation | Pydantic models, field presence, SourceDoc fields |
 
 ---
 
-## ☁️ Streamlit Community Cloud Deployment
-To host MindBot online:
+## 🛢️ Qdrant Payload Schema
 
-1. Push your code to your GitHub repository (ensuring `.env` and `models/` are ignored).
-2. Log into [share.streamlit.io](https://share.streamlit.io/) using your GitHub account.
-3. Click **"New app"**, then select:
-   * **Repository**: `your-github-username/nlp-mental-health-chatbot-2026`
-   * **Branch**: `main`
-   * **Main file path**: `app/streamlit_app.py`
-4. Click **"Advanced settings..."** at the bottom of the page.
-5. Under **Secrets (TOML format)**, paste your keys:
+Each vector in `health-counseling-dataset` stores:
+
+| Field | Description |
+|-------|-------------|
+| `chunk` | Embedded text (full "Patient: … Counselor: …" or sub-chunk) |
+| `context` | Original patient question (capped at 500 chars) |
+| `response` | Counselor answer (capped at 500 chars) |
+| `chunk_idx` | Position within the source document |
+| `total_chunks` | Total sub-chunks from the source record |
+| `source_row_id` | Original dataset row number for traceability |
+
+The UI source expander shows separate **Q:** / **A:** panels when `context` and `response`
+are populated, falling back to the full chunk text for older records.
+
+---
+
+## 📊 Module Performance
+
+### M1 — Language Detector (TF-IDF + LinearSVC)
+Trained on `papluca/language-identification` (70k samples, 20 languages).
+
+| Set | Accuracy |
+|-----|---------|
+| Validation | ~99.1% |
+| Test | ~98.8% |
+
+Layer priority: Unicode script (instant) → short ASCII default → TF-IDF model → langdetect.
+
+### M2 — Emotion Classifier (DistilBERT)
+Fine-tuned on `dair-ai/emotion` (16k training, 6 classes).
+
+| Metric | Score |
+|--------|-------|
+| Test Accuracy | ~93.5% |
+| Weighted F1 | ~93.2% |
+
+Classes: sadness, joy, love, anger, fear, surprise.
+
+### M3 — Intent Classifier (Few-shot Groq)
+5-class few-shot prompting via `gpt-oss-20b`. No training required.
+
+| Intent | Route |
+|--------|-------|
+| greeting, goodbye, gratitude, out_of_scope | `direct` (lightweight LLM reply) |
+| asking_mental_health_question | `rag` (full M2 + M4 pipeline) |
+
+### M4 — RAG Pipeline (Qdrant + BGE + Groq)
+- **Embedder:** `BAAI/bge-base-en-v1.5` (768-dim, cosine similarity)
+- **Collection:** 10,000+ vectorized counseling Q&A pairs
+- **Retrieval:** Query rewriting → top-k Qdrant search → ranked by cosine score
+- **Generation:** `gpt-oss-120b` with emotion-aware, language-aware prompt
+
+---
+
+## 🌍 Supported Languages
+
+| Code | Language | Detection Layer |
+|------|----------|----------------|
+| ar | Arabic | Unicode script (instant) |
+| zh | Chinese | Unicode script (instant) |
+| ja | Japanese | Unicode script (instant) |
+| hi | Hindi | Unicode script (instant) |
+| ru | Russian | Unicode script (instant) |
+| el | Greek | Unicode script (instant) |
+| th | Thai | Unicode script (instant) |
+| ko | Korean | Unicode script (instant) |
+| ur | Urdu | Unicode script (instant) |
+| en | English | Short-ASCII default + TF-IDF |
+| fr | French | TF-IDF model |
+| de | German | TF-IDF model |
+| es | Spanish | TF-IDF model |
+| it | Italian | TF-IDF model |
+| pt | Portuguese | TF-IDF model |
+| nl | Dutch | TF-IDF model |
+| pl | Polish | TF-IDF model |
+| sv | Swedish | TF-IDF model |
+| tr | Turkish | TF-IDF model |
+| vi | Vietnamese | TF-IDF model |
+
+All non-English messages are translated to English for NLP processing, then the LLM is instructed to respond in the user's detected language.
+
+---
+
+## ☁️ Streamlit Cloud Deployment
+
+1. Push your repository to GitHub (`.env` and `models/` are git-ignored).
+2. Log into [share.streamlit.io](https://share.streamlit.io/) → **New app**.
+3. Select your repo, branch `main`, main file `app/streamlit_app.py`.
+4. Under **Advanced settings → Secrets (TOML format)**:
    ```toml
-   GROQ_API_KEY = "gsk_your_groq_api_key"
-   QDRANT_URL = "https://your-cluster-endpoint.qdrant.io"
+   LLM_API_KEY = "gsk_your_groq_api_key"
+   QDRANT_CLUSTER_ENDPOINT = "https://your-cluster-id.qdrant.io"
    QDRANT_API_KEY = "your_qdrant_api_key"
    ```
-6. Click **"Save"**, and then select **"Deploy!"**. The container will boot up, automatically load modules via the Hugging Face/langdetect cloud fallback layer, and run without crashes.
+5. Click **Deploy!** — fallback layers activate automatically (langdetect + HuggingFace Hub).
 
 ---
 
 ## 🔍 Troubleshooting
-* **Qdrant Read/Write Timeouts**: We have set the default client timeout to `60.0` seconds to prevent connection drops on Qdrant free-tier endpoints during initial cold-starts.
-* **Double-Translation / English Response to Native Input**: We resolve this by having the RAG prompt (`RESPOND IN: [language]`) instruct the LLM to output directly in the auto-detected language. We bypass the final `_translate` step for active LLM generation, only using it as a fallback for hardcoded English greetings.
-* **Model Weight Pathing Issues**: If the application throws pathing errors, ensure that your `.env` contains the correct paths, or delete local folders inside `models/` to force the app to stream weights via the cloud fallback layer.
+
+| Problem | Solution |
+|---------|----------|
+| Qdrant timeout on cold start | Set `QDRANT_TIMEOUT=60` — default is already 60s in code |
+| LLM responds in English to Arabic input | Ensure `language_name` is detected correctly — check Module 1 status in sidebar |
+| Models path error on Streamlit Cloud | Delete `models/` entries in `.env`; app will use cloud fallbacks |
+| `LLM_API_KEY not set` error | Copy `.env.example` to `.env` and add your Groq key |
+| `QDRANT_CLUSTER_ENDPOINT not set` | Add your Qdrant Cloud URL to `.env` |
+| Crisis response in English for Arabic user | Fixed in v3 — language detection now precedes crisis check |
+| `strong_model` / `top_k` settings ignored | Fixed in v3 — sidebar settings now forwarded to `engine.process()` |
+
+---
+
+## 📜 Dataset & Model Credits
+
+| Resource | Source |
+|----------|--------|
+| Language detection training data | [papluca/language-identification](https://huggingface.co/datasets/papluca/language-identification) |
+| Emotion classification training data | [dair-ai/emotion](https://huggingface.co/datasets/dair-ai/emotion) |
+| RAG knowledge base | [heliosbrahma/mental_health_counseling_conversations](https://huggingface.co/datasets/heliosbrahma/mental_health_counseling_conversations) |
+| Embedding model | [BAAI/bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) |
+| Emotion hub fallback | [bhadresh-savani/distilbert-base-uncased-emotion](https://huggingface.co/bhadresh-savani/distilbert-base-uncased-emotion) |
+| LLM provider | [Groq Cloud](https://console.groq.com) — gpt-oss-120b / gpt-oss-20b |
+| Vector database | [Qdrant Cloud](https://cloud.qdrant.io) — free tier |
+
+---
+
+## ⚠️ Mental Health Disclaimer
+
+MindBot is an educational NLP project and **is not a substitute for professional mental health care**. The chatbot:
+- Does **not** provide medical diagnoses
+- Does **not** prescribe medications
+- Should **not** be used as the sole resource during a mental health crisis
+
+If you or someone you know is in crisis, please contact a trained professional or call your local emergency services.

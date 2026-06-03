@@ -1,14 +1,14 @@
 """
 Chat Engine — Orchestrates all 4 NLP modules end-to-end.
 
-Pipeline:
-  1. Crisis detection (bonus — HIGH level overrides everything)
-  2. Language detection (Module 1)
-  3. Translation to English if needed (bonus)
-  4. Intent classification with emotion hint (Module 3)
-  5. Emotion classification (Module 2)  — only for mental health queries
-  6. RAG answer with conversation context (Module 4)  OR  direct LLM reply
-  7. Translate response back if needed (bonus)
+Pipeline (revised order for correct multilingual crisis detection):
+  1. Language detection  (Module 1)         — fast, mostly regex/rule-based
+  2. Translate to English if needed         — Groq gpt-oss-20b
+  3. Crisis detection                        — on English text, catches all languages
+  4. Intent classification (Module 3)       — few-shot LLM
+  5. Emotion classification (Module 2)      — DistilBERT, only for mental-health queries
+  6. RAG answer OR direct LLM reply (Module 4)
+  7. (If HIGH crisis AND non-English) translate crisis response back
 
 Single entry-point: engine.process(message, session_id)
 """
@@ -76,11 +76,17 @@ def _translate(text: str, direction: str, language: str, groq_client) -> str:
         return text
     try:
         if direction == "to_en":
-            prompt = f"Translate this {language} text to English. Reply with ONLY the translation:\n\n{text}"
+            prompt = (
+                f"Translate this {language} text to English. "
+                f"Reply with ONLY the translation, no explanations:\n\n{text}"
+            )
         else:
             from src.modules.language_detector import LANGUAGE_NAMES
             lang_name = LANGUAGE_NAMES.get(language, language)
-            prompt = f"Translate this English text to {lang_name}. Reply with ONLY the translation:\n\n{text}"
+            prompt = (
+                f"Translate this English text to {lang_name}. "
+                f"Reply with ONLY the translation, no explanations:\n\n{text}"
+            )
 
         from groq import Groq
         r = groq_client.chat.completions.create(
@@ -93,12 +99,22 @@ def _translate(text: str, direction: str, language: str, groq_client) -> str:
         return text
 
 
+# ── Crisis merge helper ────────────────────────────────────────────────────────
+
+def _merge_crisis(a: dict, b: dict) -> dict:
+    """Return the more severe crisis result of two detect_crisis() outputs."""
+    rank = {"high": 2, "medium": 1, "low": 0}
+    if rank[a["level"]] >= rank[b["level"]]:
+        return a
+    return b
+
+
 # ── Chat Engine ────────────────────────────────────────────────────────────────
 
 class ChatEngine:
     def __init__(self):
         self.status = ModuleStatus()
-        self._lang:   Optional[LanguageDetector]  = None
+        self._lang:    Optional[LanguageDetector]  = None
         self._emotion: Optional[EmotionClassifier] = None
         self._intent:  Optional[IntentClassifier]  = None
         self._rag:     Optional[RAGPipeline]        = None
@@ -109,9 +125,11 @@ class ChatEngine:
         self._load_emotion()
         self._load_intent()
         self._load_rag()
-        # Groq client for translation (reuse RAG client if available)
+        # Groq client for translation — reuse RAG client to avoid extra init
         if self._rag:
             self._groq_client = self._rag._groq
+        elif self._intent:
+            self._groq_client = self._intent._client
         return self
 
     def _load_language(self):
@@ -154,11 +172,19 @@ class ChatEngine:
         """
         Run the full pipeline.
 
+        Pipeline order (revised):
+          1. Language detection  → know the language before crisis check
+          2. Translate → English  → crisis keywords are English, detect on en_message
+          3. Crisis detection    → on English representation (catches all languages)
+          4. Intent classification
+          5. Emotion + RAG  (mental health path)  OR  direct LLM reply
+          6. Return result with all metadata
+
         Parameters
         ----------
-        message      : user input text
-        session_id   : identifies the conversation session
-        top_k        : number of documents to retrieve from Qdrant (Module 4)
+        message      : raw user input text (any language)
+        session_id   : conversation identifier
+        top_k        : passages retrieved from Qdrant (Module 4)
         strong_model : use gpt-oss-120b (True) or gpt-oss-20b (False)
 
         Returns
@@ -171,15 +197,45 @@ class ChatEngine:
         history = _sessions[session_id]
         message = message.strip()
 
-        # ── 1. Crisis detection ────────────────────────────────────────────────
-        crisis = detect_crisis(message)
+        # ── 1. Language detection ──────────────────────────────────────────────
+        lang_result = (
+            self._lang.detect(message)
+            if self._lang
+            else {"language": "en", "language_name": "English", "confidence": 0.85}
+        )
+        language      = lang_result["language"]
+        language_name = lang_result["language_name"]
+        lang_conf     = lang_result.get("confidence", 0.85)
+
+        # ── 2. Translate to English for NLP processing ────────────────────────
+        # Crisis, intent, and emotion models are English-based.
+        en_message = (
+            _translate(message, "to_en", language, self._groq_client)
+            if language != "en" and self._groq_client
+            else message
+        )
+
+        # ── 3. Crisis detection — dual-pass for maximum safety ────────────────
+        # Pass 1: original message — catches multilingual keywords (AR/FR/ES/EN)
+        # Pass 2: translated text  — catches English keywords in translated text
+        # Take the most severe result of the two passes.
+        crisis_orig = detect_crisis(message)
+        crisis_en   = detect_crisis(en_message) if en_message != message else crisis_orig
+        crisis = _merge_crisis(crisis_orig, crisis_en)
+
         if crisis["level"] == "high":
-            resp = crisis["response"]
+            resp_en = crisis["response"]
+            # Translate crisis response back to user's language if non-English
+            resp = (
+                _translate(resp_en, "from_en", language, self._groq_client)
+                if language != "en" and self._groq_client
+                else resp_en
+            )
             history.append(Turn("user",      message, {}))
             history.append(Turn("assistant", resp,    {"crisis": True, "crisis_level": "high"}))
             return self._result(
                 message=message, response=resp,
-                language="en", language_name="English", lang_conf=0.99,
+                language=language, language_name=language_name, lang_conf=lang_conf,
                 intent="asking_mental_health_question",
                 emotion="fear", emotion_meta={},
                 sources=[], crisis=True, crisis_level="high",
@@ -189,23 +245,6 @@ class ChatEngine:
         forced_tone = (
             "deeply compassionate and validating"
             if crisis["level"] == "medium" else None
-        )
-
-        # ── 2. Language detection ──────────────────────────────────────────────
-        lang_result   = (
-            self._lang.detect(message)
-            if self._lang
-            else {"language": "en", "language_name": "English", "confidence": 0.85}
-        )
-        language      = lang_result["language"]
-        language_name = lang_result["language_name"]
-        lang_conf     = lang_result.get("confidence", 0.85)
-
-        # ── 3. Translate to English for NLP processing ────────────────────────
-        en_message = (
-            _translate(message, "to_en", language, self._groq_client)
-            if language != "en" and self._groq_client
-            else message
         )
 
         # ── 4. Intent classification ───────────────────────────────────────────
@@ -218,9 +257,9 @@ class ChatEngine:
         intent = intent_result["intent"]
         route  = intent_result["route"]
 
-        # ── 5+6. Route ─────────────────────────────────────────────────────────
+        # ── 5+6. Route by intent ───────────────────────────────────────────────
         if route == "rag" and self._rag:
-            # Emotion classification
+            # 5. Emotion classification
             emotion_result = (
                 self._emotion.classify(en_message)
                 if self._emotion
@@ -231,12 +270,13 @@ class ChatEngine:
             emotion = emotion_result["emotion"]
             tone    = forced_tone or emotion_result["tone"]
 
-            # Build conversation context for RAG (last user turn)
+            # Build conversation context for retrieval (last user turn for context)
             conv_ctx = ""
             user_turns = [t.content for t in history if t.role == "user"]
             if user_turns:
                 conv_ctx = user_turns[-1]
 
+            # 6. RAG generation (LLM prompted to respond in language_name)
             rag_result = self._rag.answer(
                 question=en_message,
                 emotion=emotion,
@@ -251,15 +291,20 @@ class ChatEngine:
             sources  = rag_result["sources"]
 
         else:
+            # Direct LLM reply (greeting, goodbye, gratitude, out-of-scope)
             emotion_result = {
                 "emotion": None, "emoji": "", "color": "",
                 "confidence": 0.0, "all_scores": {}, "device": "n/a",
             }
             emotion = None
+
             if self._rag:
-                direct   = self._rag.direct_reply(en_message, intent=intent, language_name=language_name)
+                # LLM direct reply — prompted to respond in language_name
+                direct   = self._rag.direct_reply(en_message, intent=intent,
+                                                   language_name=language_name)
                 response = direct["response"]
             else:
+                # Hard fallback when RAG module unavailable
                 response_en = self._fallback(intent)
                 response = (
                     _translate(response_en, "from_en", language, self._groq_client)
@@ -268,7 +313,7 @@ class ChatEngine:
                 )
             sources = []
 
-        # ── 8. Store session history ───────────────────────────────────────────
+        # ── 7. Store session history ───────────────────────────────────────────
         history.append(Turn("user",      message,  {"language": language, "intent": intent}))
         history.append(Turn("assistant", response, {"emotion": emotion}))
         if len(history) > MAX_HISTORY * 2:
@@ -298,7 +343,7 @@ class ChatEngine:
             "greeting":    "Hello! I'm your mental health support assistant. How can I help you today?",
             "goodbye":     "Take care of yourself. I'm always here if you need support. 💙",
             "gratitude":   "You're very welcome. I'm glad I could help.",
-            "out_of_scope":"I'm best equipped to help with mental health topics like anxiety, depression, or stress. Is there something along those lines I can help with?",
+            "out_of_scope": "I'm best equipped to help with mental health topics like anxiety, depression, or stress. Is there something along those lines I can help with?",
         }.get(intent, "I'm here to support you. How can I help?")
 
     @staticmethod
@@ -308,6 +353,7 @@ class ChatEngine:
             "response":      kw.get("response", ""),
             "language":      kw.get("language", "en"),
             "language_name": kw.get("language_name", "English"),
+            "lang_conf":     kw.get("lang_conf", 0.85),
             "intent":        kw.get("intent", ""),
             "intent_meta":   kw.get("intent_meta", {}),
             "emotion":       kw.get("emotion"),
