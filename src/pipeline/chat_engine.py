@@ -247,8 +247,8 @@ class ChatEngine:
                 top_k=top_k,
                 use_strong_model=strong_model,
             )
-            response_en = rag_result["response"]
-            sources     = rag_result["sources"]
+            response = rag_result["response"]
+            sources  = rag_result["sources"]
 
         else:
             emotion_result = {
@@ -257,18 +257,16 @@ class ChatEngine:
             }
             emotion = None
             if self._rag:
-                direct     = self._rag.direct_reply(en_message, intent=intent, language_name=language_name)
-                response_en = direct["response"]
+                direct   = self._rag.direct_reply(en_message, intent=intent, language_name=language_name)
+                response = direct["response"]
             else:
                 response_en = self._fallback(intent)
+                response = (
+                    _translate(response_en, "from_en", language, self._groq_client)
+                    if language != "en" and self._groq_client
+                    else response_en
+                )
             sources = []
-
-        # ── 7. Translate response back if user wrote in non-English ────────────
-        response = (
-            _translate(response_en, "from_en", language, self._groq_client)
-            if language != "en" and self._groq_client
-            else response_en
-        )
 
         # ── 8. Store session history ───────────────────────────────────────────
         history.append(Turn("user",      message,  {"language": language, "intent": intent}))

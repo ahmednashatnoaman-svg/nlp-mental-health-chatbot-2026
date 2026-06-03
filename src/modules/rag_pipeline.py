@@ -111,7 +111,7 @@ class RAGPipeline:
             raise ValueError("QDRANT_CLUSTER_ENDPOINT not set — add it to .env")
 
         self._groq     = Groq(api_key=groq_key)
-        self._qdrant   = QdrantClient(url=q_url, api_key=q_key)
+        self._qdrant   = QdrantClient(url=q_url, api_key=q_key, timeout=60.0)
         self._device   = _best_device()
         self._embedder = SentenceTransformer(embed_model, device=self._device)
 
